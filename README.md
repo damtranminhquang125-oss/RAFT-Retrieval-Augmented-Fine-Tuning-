@@ -1,5 +1,7 @@
 # RAGFT: RAFT Fine-tuning cho Medical QA
 
+** Dataset và Model có thể xem thêm tại: https://drive.google.com/drive/folders/13BQ4yZEb5-RJn47dMURsaLG2xsuE-Rz8?usp=sharing
+
 ## 1. Giới thiệu
 
 RAGFT là một thử nghiệm fine-tuning mô hình ngôn ngữ cho bài toán hỏi đáp y khoa có truy xuất tài liệu (Retrieval-Augmented Generation - RAG). Dự án áp dụng ý tưởng RAFT (Retrieval-Augmented Fine-Tuning) để dạy mô hình phân biệt hai tình huống:
