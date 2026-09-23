@@ -1,381 +1,255 @@
-# RAGFT: RAFT Fine-tuning for Grounded and Memory QA
+# RAGFT: RAFT Fine-tuning cho Medical QA
 
-Dự án xây dựng dữ liệu RAFT từ MedRAG textbooks, fine-tune `Qwen/Qwen2.5-3B-Instruct` bằng QLoRA, sau đó đánh giá khả năng phân biệt hai chế độ trả lời:
+## 1. Giới thiệu
 
-- `grounded`: câu trả lời có bằng chứng trích nguyên văn từ một document trong prompt.
-- `memory`: document không hỗ trợ đầy đủ câu trả lời, model trả lời bằng kiến thức đã học và không được tạo citation.
+RAGFT là một thử nghiệm fine-tuning mô hình ngôn ngữ cho bài toán hỏi đáp y khoa có truy xuất tài liệu (Retrieval-Augmented Generation - RAG). Dự án áp dụng ý tưởng RAFT (Retrieval-Augmented Fine-Tuning) để dạy mô hình phân biệt hai tình huống:
 
-## Thành phần
+- **Grounded**: câu trả lời được hỗ trợ đầy đủ bởi một tài liệu trong prompt và phải trích dẫn bằng chứng nguyên văn.
+- **Memory**: các tài liệu được cung cấp không đủ để trả lời, vì vậy mô hình phải sử dụng kiến thức đã học và không được tạo citation giả.
 
-- `raft.ipynb`: tải dữ liệu MedRAG, sinh câu hỏi/đáp án bằng Groq, tạo distractor documents và lưu checkpoint.
-- `test.ipynb`: chia dữ liệu, oversample `memory`, fine-tune LoRA, tải adapter và đánh giá model.
-- `raft_dataset.zip`: dữ liệu RAFT đã tạo, nếu được đóng gói từ checkpoint.
-- `raft_qwen25_3b_lora.zip`: LoRA adapter đã fine-tune.
+Mô hình được sử dụng là `Qwen/Qwen2.5-3B-Instruct`, fine-tune bằng QLoRA trên Google Colab.
 
-## Yêu cầu môi trường
+## 2. Kết quả
 
-Khuyến nghị chạy trên Google Colab có GPU T4 16 GB.
+Kết quả dưới đây là output của lần chạy hiện tại trong `test.ipynb`:
 
-Các thư viện chính:
+| Tập đánh giá | Token F1 | ROUGE-L | Đúng format RAFT |
+|---|---:|---:|---:|
+| Toàn bộ test | 48.9% | 46.6% | 68.0% |
+| Grounded | 58.1% | 56.3% | 77.9% |
+| Memory | 28.5% | 25.3% | 46.2% |
+
+Một số chỉ số bổ sung:
+
+- Citation normalized match trong input context: **70.9%**.
+- Citation normalized match với oracle context: **70.3%**.
+- Grounded format error: **22.1%**.
+- Memory quote error: **7.7%**.
+
+Kết quả cho thấy mô hình xử lý chế độ Grounded tốt hơn chế độ Memory. Tuy nhiên, khả năng tuân thủ format và chất lượng câu trả lời Memory vẫn còn nhiều dư địa để cải thiện.
+
+## 3. Dataset nguồn và dataset đã generate
+
+### Dataset nguồn: MedRAG/textbooks
+
+Notebook sử dụng split `train` của dataset `MedRAG/textbooks` trên Hugging Face. Đây là tập văn bản y khoa đã được chia thành các chunk, dùng làm nguồn tài liệu và oracle context.
+
+Trong code hoặc tài liệu khác, dataset này có thể được gọi nhầm là “MegRAG”. Tên dataset thực tế được sử dụng trong notebook là **`MedRAG/textbooks`**.
+
+Các chunk được chọn tương đối đều giữa các textbook. Mỗi chunk có thể được dùng để sinh nhiều câu hỏi và làm nguồn tạo dữ liệu RAFT.
+
+### Dataset RAFT đã generate
+
+Pipeline sinh dữ liệu tạo câu hỏi, tài liệu gây nhiễu và câu trả lời có format cố định. Dataset hợp lệ của lần chạy hiện tại có:
+
+- **1.734 samples**.
+- **1.203 samples Grounded**.
+- **531 samples Memory**.
+- Mỗi chunk sinh **2 câu hỏi**.
+- Mỗi sample sử dụng các distractor documents được chọn bằng BM25.
+- Dataset được lưu thành JSONL tại `raft_dataset.zip`.
+
+Mỗi sample thường gồm các trường:
+
+```text
+id
+source_chunk_id
+question
+instruction
+cot_answer
+answer_mode
+context
+oracle_context
+```
+
+Ý nghĩa của từng trường:
+
+| Trường | Kiểu dữ liệu | Ý nghĩa |
+|---|---|---|
+| `id` | `string` | ID duy nhất của sample. Được dùng để truy xuất sample và lưu prediction tương ứng khi đánh giá. |
+| `source_chunk_id` | `int` hoặc `string` | ID của chunk trong dataset nguồn đã dùng để sinh câu hỏi. Trường này được dùng làm group khi chia train/test để tránh data leakage. |
+| `question` | `string` | Câu hỏi y khoa được sinh từ source chunk. Đây là nội dung cần mô hình trả lời. |
+| `instruction` | `string` | Prompt đầy đủ đưa cho model, gồm các document trong context và câu hỏi. Trường này được dùng làm phần user input khi fine-tuning và inference. |
+| `cot_answer` | `string` | Câu trả lời chuẩn (gold answer) do pipeline sinh ra. Câu trả lời tuân theo format RAFT: Grounded có `Evidence:`, Memory có `Reasoning:`, và kết thúc bằng đúng một `<ANSWER>:`. |
+| `answer_mode` | `string` | Nhãn của sample, có giá trị `grounded` hoặc `memory`. Nhãn này dùng để stratify khi chia dữ liệu và để tính metric theo từng chế độ. |
+| `context` | `dict` | Các document được đưa vào prompt. Thông thường gồm danh sách nội dung document và title tương ứng; các document có thể bao gồm oracle hoặc distractor. |
+| `oracle_context` | `string` | Nội dung document nguồn có câu trả lời đầy đủ cho câu hỏi. Trường này dùng để tạo gold answer và kiểm tra citation, không nhất thiết được đưa vào input của Memory sample. |
+
+### Cấu trúc `context`
+
+`context` thường có dạng:
+
+```python
+{
+        "sentences": [["document 1", "document 2", "..."]],
+        "titles": [["title 1", "title 2", "..."]],
+}
+```
+
+`sentences` chứa nội dung các document được đánh số trong prompt. `titles` chứa tiêu đề tương ứng theo cùng vị trí. Một số sample có thể dùng tên khóa hoặc cấu trúc lồng nhau hơi khác tùy phiên bản checkpoint, nhưng ý nghĩa vẫn là danh sách document và metadata của document.
+
+### Khác nhau giữa hai chế độ
+
+- **Grounded**: `context` chứa oracle document cùng các distractor; `oracle_context` là document dùng làm bằng chứng; `cot_answer` phải có quote hợp lệ từ oracle.
+- **Memory**: `context` chỉ chứa distractor hoặc các document không đủ để trả lời; `oracle_context` vẫn được giữ làm metadata/ground truth để đánh giá, nhưng không được đưa vào `instruction`; `cot_answer` không được chứa quote.
+
+Với sample Grounded, oracle document được đưa vào context. Với sample Memory, oracle document bị loại khỏi context để kiểm tra khả năng sử dụng kiến thức nền mà không bịa citation.
+
+## 4. Phương pháp đã áp dụng
+
+### Sinh câu hỏi và câu trả lời
+
+- Dùng Groq API để sinh câu hỏi từ các chunk y khoa.
+- Sinh câu trả lời Grounded có phần `Evidence:` và quote từ oracle document.
+- Sinh câu trả lời Memory có phần `Reasoning:` nhưng không có quote.
+- Kiểm tra tính hợp lệ trước khi ghi sample vào dataset.
+
+### Tạo hard negative bằng BM25
+
+BM25 được dùng để chọn các tài liệu có nội dung gần với câu hỏi nhưng không phải oracle document. Các distractor này làm cho bài toán khó hơn và buộc mô hình phải kiểm tra nội dung thay vì chỉ dựa vào sự xuất hiện của tài liệu.
+
+### Chia train/test theo group
+
+Dữ liệu được chia bằng `StratifiedGroupKFold`:
+
+- `answer_mode` dùng để stratify.
+- `source_chunk_id` dùng làm group.
+- Các sample cùng nguồn không xuất hiện đồng thời trong train và test.
+- `random_state=42` được giữ cố định để có thể tái lập.
+
+Kết quả chia dữ liệu:
+
+```text
+Train raw: 1.484 samples
+Test:        250 samples
+Train final: 1.937 samples
+```
+
+Chỉ tập train được oversample theo tỷ lệ:
+
+```text
+1x Grounded + 2x Memory
+```
+
+### Fine-tuning bằng QLoRA
+
+Base model được load ở 4-bit với NF4. Chỉ các projection của attention được huấn luyện bằng LoRA:
+
+```text
+r=16
+lora_alpha=32
+target_modules=[q_proj, k_proj, v_proj, o_proj]
+lora_dropout=0.1
+```
+
+Loss chỉ được tính trên phần completion để tập trung vào câu trả lời của assistant.
+
+## 5. Pipeline
+
+```text
+MedRAG/textbooks
+        |
+        v
+Chọn và chia chunk nguồn
+        |
+        v
+Groq sinh câu hỏi
+        |
+        v
+Chọn BM25 distractors
+        |
+        +------------------------------+
+        |                              |
+        v                              v
+Grounded: có oracle              Memory: bỏ oracle
+        |                              |
+        +--------------+---------------+
+                       v
+             Kiểm tra format và citation
+                       |
+                       v
+              Checkpoint JSON theo chunk
+                       |
+                       v
+          Split train/test theo source_chunk_id
+                       |
+                       v
+             Oversample Memory trên train
+                       |
+                       v
+             QLoRA fine-tuning Qwen 3B
+                       |
+                       v
+             Load adapter và inference
+                       |
+                       v
+       Đánh giá answer, format và citation
+```
+
+## 6. Cấu trúc thư mục
+
+```text
+RAGFT/
+├── raft.ipynb             # Sinh dataset RAFT và fine-tune model
+├── test.ipynb             # Load adapter, inference và đánh giá
+├── README.md              # Tài liệu dự án
+└── raft_dataset.zip       # Data sau khi generate
+```
+
+## 7. Công nghệ sử dụng
+
+- Python và Jupyter Notebook.
+- Google Colab và Google Drive.
+- Hugging Face `datasets`.
+- Hugging Face `transformers`.
+- `peft` và `bitsandbytes` cho LoRA/QLoRA.
+- `trl` cho supervised fine-tuning.
+- Free Groq API để sinh dữ liệu tổng hợp.
+- BM25 để chọn hard negative documents.
+- `scikit-learn` cho chia dữ liệu.
+- `rouge-score`, pandas và các metric tự định nghĩa cho đánh giá.
+- Base model: `Qwen/Qwen2.5-3B-Instruct`.
+- Free GPU T4 của Google Colab và Kaggle
+
+## 8. Cài đặt
+
+Khuyến nghị sử dụng Google Colab với GPU T4 16 GB.
 
 ```bash
 pip install -q groq datasets tqdm matplotlib seaborn pandas
-pip install -q transformers peft trl bitsandbytes accelerate datasets
+pip install -q transformers peft trl bitsandbytes accelerate
 pip install -q rouge-score scikit-learn
 ```
 
-Model sử dụng:
-
-```text
-Qwen/Qwen2.5-3B-Instruct
-```
-
-## 1. Sinh dataset bằng `raft.ipynb`
-
-Notebook `raft.ipynb` thực hiện các bước:
-
-1. Mount Google Drive.
-2. Tải `MedRAG/textbooks`.
-3. Chọn các chunk nguồn theo từng textbook.
-4. Sinh câu hỏi từ chunk bằng Groq.
-5. Chọn distractor documents bằng BM25.
-6. Với mỗi câu hỏi, tạo một trong hai chế độ:
-   - Có oracle document: `grounded`, bắt buộc quote.
-   - Không có oracle document: `memory`, không được quote.
-7. Kiểm tra label trước khi ghi.
-8. Lưu từng chunk vào checkpoint JSON để có thể resume.
-
-Các checkpoint được lưu tại:
-
-```text
-/content/drive/MyDrive/raft_project/raft_checkpoint_chunks
-```
-
-Mỗi file checkpoint có dạng:
-
-```text
-chunk_000994.json
-```
-
-và chứa `source_chunk_id`, `sample_count` và danh sách `samples`.
-
-### Lưu ý về API key
-
-Không hard-code Groq API key hoặc Hugging Face token trong notebook. Hãy dùng Colab Secrets:
-
-```python
-from google.colab import userdata
-
-GROQ_API_KEY = userdata.get("GROQ_API_KEY")
-```
-
-Nếu token đã từng xuất hiện trong notebook hoặc bị commit, hãy revoke token đó và tạo token mới.
-
-## 2. Chia dữ liệu trong `test.ipynb`
-
-Dữ liệu được chia theo `source_chunk_id`, không chia ngẫu nhiên từng sample. Điều này bảo đảm các sample cùng chunk không bị đưa sang cả train và test, giúp giảm leakage.
-
-Split sử dụng:
-
-```python
-StratifiedGroupKFold(
-    n_splits=7,
-    shuffle=True,
-    random_state=42,
-)
-```
-
-`answer_mode` được dùng để stratify, còn `source_chunk_id` được dùng làm group.
-
-Các kiểm tra bắt buộc:
-
-```python
-assert train_chunk_ids.isdisjoint(test_chunk_ids)
-assert len(train_samples_raw) + len(test_samples) == len(raft_samples)
-```
-
-### Oversampling memory
-
-Oversampling chỉ được thực hiện trên train, không thực hiện trên test:
-
-```text
-Train: 1x grounded + 2x memory
-Test: giữ nguyên phân bố tự nhiên
-```
-
-Các bản sao memory được deep-copy và gán ID mới để tránh trùng ID:
-
-```text
-<original_id>_dup
-```
-
-Test set phải được giữ nguyên để phản ánh đúng phân bố thực tế và tránh đánh giá quá lạc quan.
-
-## 3. Fine-tune bằng QLoRA
-
-Model được load ở 4-bit với NF4, sau đó chỉ train LoRA trên các projection của attention:
-
-```python
-load_in_4bit=True
-bnb_4bit_quant_type="nf4"
-bnb_4bit_compute_dtype=torch.float16
-bnb_4bit_use_double_quant=True
-```
-
-LoRA hiện tại:
-
-```python
-LoraConfig(
-    r=16,
-    lora_alpha=32,
-    target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
-    lora_dropout=0.10,
-    bias="none",
-    task_type="CAUSAL_LM",
-)
-```
-
-Cấu hình training khuyến nghị:
-
-```python
-SFTConfig(
-    num_train_epochs=3,
-    per_device_train_batch_size=4,
-    gradient_accumulation_steps=2,
-    learning_rate=1e-4,
-    weight_decay=0.05,
-    lr_scheduler_type="cosine",
-    warmup_steps=50,
-    max_length=2048,
-    completion_only_loss=True,
-    fp16=True,
-)
-```
-
-Nếu GPU không đủ VRAM với `max_length=2048`, dùng:
-
-```python
-per_device_train_batch_size=2
-gradient_accumulation_steps=4
-```
-
-Effective batch size vẫn tương đương.
-
-`max_length=2048` quan trọng vì system prompt, nhiều document và completion có thể dài. Cấu hình `max_length=1200` trước đây làm khoảng 98.6% sample bị truncation, khiến model dễ bỏ sót `Evidence:`, `Reasoning:` hoặc `<ANSWER>:`.
-
-## 4. Lưu và tải adapter
-
-Adapter được lưu tại:
-
-```text
-/content/drive/MyDrive/raft_project/raft_qwen25_3b_lora
-```
-
-Nếu adapter được đóng gói thành ZIP:
-
-```text
-/content/drive/MyDrive/raft_project/raft_qwen25_3b_lora.zip
-```
-
-Cần giải nén trước khi gọi `PeftModel.from_pretrained()`. Thư mục adapter sau khi giải nén phải chứa tối thiểu:
-
-```text
-adapter_config.json
-adapter_model.safetensors
-tokenizer_config.json
-tokenizer.json
-```
-
-Tokenizer nên được tải từ thư mục adapter để giữ `chat_template.jinja` đã lưu:
-
-```python
-tokenizer = AutoTokenizer.from_pretrained(
-    ADAPTER_DIR,
-    local_files_only=True,
-)
-```
-
-Sau đó load base model và ghép adapter:
-
-```python
-base_model = AutoModelForCausalLM.from_pretrained(
-    BASE_MODEL,
-    quantization_config=bnb_config,
-    device_map="auto",
-    torch_dtype=torch.float16,
-)
-
-model = PeftModel.from_pretrained(
-    base_model,
-    ADAPTER_DIR,
-    local_files_only=True,
-)
-```
-
-Không gọi `prepare_model_for_kbit_training()` khi chỉ tải model để inference.
-
-## 5. Format dữ liệu hội thoại
-
-Mỗi sample được chuyển thành conversational dataset:
-
-```python
-def format_sample(sample):
-    return {
-        "prompt": [
-            {"role": "system", "content": SYSTEM_RAFT},
-            {"role": "user", "content": sample["instruction"]},
-        ],
-        "completion": [
-            {"role": "assistant", "content": sample["cot_answer"]},
-        ],
-    }
-```
-
-`SYSTEM_RAFT` quy định:
-
-- Grounded bắt đầu bằng `Evidence:`.
-- Grounded phải có quote nằm trong document.
-- Memory bắt đầu bằng `Reasoning:`.
-- Memory không được có `Evidence:` hoặc quote.
-- Mọi output có đúng một `<ANSWER>:` ở dòng cuối.
-
-Loss chỉ nên tính trên completion:
-
-```python
-completion_only_loss=True
-```
-
-Không cần bật đồng thời `assistant_only_loss=True` và `completion_only_loss=True`.
-
-## 6. Đánh giá
-
-Notebook đánh giá các nhóm metric sau:
-
-### Answer quality
-
-- `Token F1`
-- `ROUGE-L`
-
-Đây là metric phụ vì cùng một đáp án y khoa có thể được diễn đạt bằng nhiều cách.
-
-### Format compliance
-
-- Đúng một `<ANSWER>:` trong toàn bộ output.
-- `<ANSWER>:` nằm ở dòng cuối.
-- Grounded bắt đầu bằng `Evidence:`.
-- Memory bắt đầu bằng `Reasoning:`.
-- Grounded có quote hợp lệ.
-- Memory không có quote.
-
-### Citation
-
-- Citation normalized match trong input context.
-- Citation normalized match với oracle context.
-- `citation_compliance` chỉ áp dụng cho grounded; memory hiển thị `N/A`.
-
-Metric citation cho phép khác biệt whitespace và một số biến thể Unicode dash/quotation mark để tránh phạt oan do OCR. Vì vậy đây là normalized match, không phải exact character match tuyệt đối.
-
-### Metric quan trọng nhất
-
-Lỗi chính cần theo dõi:
-
-```text
-Memory quote error
-```
-
-Đây là tỷ lệ sample gold là `memory` nhưng model vẫn sinh quote. Ngoài ra theo dõi:
-
-```text
-Grounded format error
-Full RAFT format compliance
-Citation compliance
-```
-
-Chạy đánh giá:
-
-```python
-rows = [
-    evaluate_raft_prediction(
-        sample,
-        predictions[sample["id"]],
-    )
-    for sample in all_test_samples
-]
-
-metrics_df = pd.DataFrame(rows)
-print_raft_summary(metrics_df)
-```
-
-## 7. Đọc kết quả training
-
-Chọn checkpoint dựa trên validation loss và metric RAFT held-out. `load_best_model_at_end=True` chỉ chọn theo `eval_loss`, không đảm bảo checkpoint tốt nhất về `memory_quote_error` hoặc format compliance.
-
-Vì vậy cần kiểm tra riêng:
-
-```text
-memory_quote_error
-memory full_format_compliance
-grounded citation_compliance
-grounded_format_error
-```
-
-Nếu train loss tiếp tục giảm nhưng validation loss tăng, đó là dấu hiệu overfitting. Không nên tăng epoch chỉ dựa trên train loss; hãy xem metric theo từng mode.
-
-## 8. Lưu ý inference
-
-Khi đánh giá, prompt phải dùng đúng `SYSTEM_RAFT` đã dùng lúc train:
-
-```python
-messages = [
-    {"role": "system", "content": SYSTEM_RAFT},
-    {"role": "user", "content": instruction},
-]
-```
-
-Độ dài input inference nên nhất quán với training. Nếu train dùng `max_length=2048`, không nên cắt input inference xuống `1536` khi prompt chứa nhiều document. Có thể dùng:
-
-```python
-inputs = tokenizer(
-    prompt,
-    return_tensors="pt",
-    truncation=True,
-    max_length=2048,
-).to(model.device)
-```
-
-Dùng `do_sample=False` để kết quả đánh giá có thể lặp lại.
-
-## Luồng chạy đề xuất
-
-```text
-raft.ipynb
-    |
-    v
-checkpoint JSON trên Google Drive
-    |
-    v
-test.ipynb: load + split theo source_chunk_id
-    |
-    v
-oversample memory trên train
-    |
-    v
-QLoRA fine-tuning Qwen2.5-3B-Instruct
-    |
-    v
-lưu adapter LoRA
-    |
-    v
-tải lại adapter + inference
-    |
-    v
-đánh giá held-out theo mode, format và citation
-```
-
-## Bảo mật và tái lập
-
-- Không commit API key hoặc Hugging Face token.
-- Giữ `random_state=42` và `random.Random(42)` để tái lập split/shuffle.
-- Không oversample test set.
-- Không chia các sample cùng `source_chunk_id` sang hai tập.
-- Lưu raw prediction cùng metric để kiểm tra các lỗi cụ thể.
+### Cách chạy
+
+1. Mở `raft.ipynb` trên Google Colab.
+2. Mount Google Drive và cấu hình secret `GROQ_API_KEY` trong Colab.
+3. Chạy các cell sinh dataset. Có thể chạy nhiều lần vì pipeline hỗ trợ checkpoint/resume.
+4. Chạy phần fine-tuning để lưu LoRA adapter.
+5. Mở `test.ipynb`, tải dataset và adapter, sau đó chạy inference và đánh giá.
+
+Không hard-code Groq API key hoặc Hugging Face token trong notebook. Nếu token từng bị lộ, cần revoke và tạo token mới.
+
+## 9. Nâng cấp trong tương lai
+
+- Tăng kích thước dataset và số lượng textbook được sử dụng.
+- Cải thiện prompt sinh câu hỏi để giảm câu hỏi trùng lặp hoặc quá dễ.
+- Thử nhiều chiến lược hard negative và retrieval khác nhau ngoài BM25.
+- Cân bằng lại dữ liệu Grounded/Memory hoặc thử các tỷ lệ oversampling khác.
+- Tăng chất lượng đánh giá bằng human evaluation và bộ câu hỏi y khoa độc lập.
+- Thử các base model lớn hơn hoặc các phiên bản Qwen mới hơn.
+- Tối ưu system prompt và context length cho inference.
+- Theo dõi riêng các lỗi hallucination, citation sai và trả lời thiếu thông tin.
+- Lưu prediction, metric và cấu hình training theo version để so sánh các lần chạy.
+
+## 10. Giới hạn
+
+- Dataset sinh bằng LLM có thể chứa câu hỏi, câu trả lời hoặc reasoning chưa chính xác.
+- Groq free tier giới hạn số token trong ngày, khiến quá trình sinh dữ liệu phải chia thành nhiều lần chạy.
+- Các metric Token F1 và ROUGE-L không phản ánh đầy đủ tính đúng đắn y khoa.
+- Citation normalized match chỉ kiểm tra mức độ khớp văn bản, chưa đánh giá sâu chất lượng lập luận.
+- Kích thước test set còn nhỏ và được tạo từ cùng nguồn MedRAG, nên khả năng tổng quát sang nguồn dữ liệu khác chưa được đảm bảo.
+- QLoRA chỉ cập nhật adapter, không cập nhật toàn bộ trọng số của base model.
+- Việc chạy trên GPU T4 với context dài có thể chậm và dễ gặp giới hạn VRAM.
+- Mô hình không được dùng để chẩn đoán hoặc đưa ra quyết định y khoa trong thực tế.
