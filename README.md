@@ -1,6 +1,6 @@
 # RAGFT: RAFT Fine-tuning cho Medical QA
 
-** Dataset và Model có thể xem thêm tại: https://drive.google.com/drive/folders/13BQ4yZEb5-RJn47dMURsaLG2xsuE-Rz8?usp=sharing
+Dataset và Model có thể xem thêm tại: https://drive.google.com/drive/folders/13BQ4yZEb5-RJn47dMURsaLG2xsuE-Rz8?usp=sharing
 
 ## 1. Giới thiệu
 
